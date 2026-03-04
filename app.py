@@ -310,6 +310,15 @@ def main():
             # Make prediction
             forecast = rf_model.predict(input_df)[0]
             
+            # Save the latest prediction & inputs to session state to be used in Tab 4
+            st.session_state['latest_prediction'] = {
+                'route': pred_route,
+                'date': pred_date,
+                'time': pred_time,
+                'forecast': forecast,
+                'is_holiday': pred_isholiday
+            }
+            
             st.markdown(f"### Predicted Passengers: <span style='color:#2563eb;'>{int(forecast)}</span>", unsafe_allow_html=True)
             
             # Simple capacity calculation logic for the prediction
@@ -317,58 +326,105 @@ def main():
             needed_coaches = int(np.ceil(forecast / standard_coach_capacity))
             
             st.info(f"💡 At ~{standard_coach_capacity} passengers per coach, you will need approximately **{needed_coaches} coaches** to prevent overcrowding.")
+            
+            # Dynamic Suggestion Based on Output
+            if forecast > 350:
+                st.warning(f"🚨 **High Volume Alert**: This prediction implies massive crowding (>{forecast:.0f} passengers). Consider deploying a dedicated high-capacity relief train or immediately maximizing carriage length.")
+            elif pred_hour in [7, 8, 9, 17, 18, 19]:
+                st.warning(f"⏳ **Peak Commuter Hour**: {int(forecast)} passengers is standard for {pred_time.strftime('%H:%M')}. Ensure quick platform turnover to avoid concourse bottlenecks.")
+            elif pred_isholiday == 1:
+                 st.info(f"🎉 **Holiday Service**: This {int(forecast)} volume represents adjusted holiday traffic. Adjust staff allocation accordingly.")
+            else:
+                st.success(f"✅ **Standard Traffic**: {int(forecast)} passengers represents manageable base-load traffic. Standard dispatch protocols apply.")
 
 
     with tab4:
-        st.header("Resource Allocation Recommendations")
-        st.markdown("Automated insights based on historical and operational data.")
+        st.header("Active Resource Allocation Recommendations")
         
-        # Recommendation Logic
-        recs = []
-        
-        # 1. Add coaches to high-demand trains
-        avg_occ_per_route = df.groupby('Route')['Seat Occupancy (%)'].mean().sort_values(ascending=False)
-        high_demand_routes = avg_occ_per_route[avg_occ_per_route > 85].index.tolist()
-        if high_demand_routes:
-            recs.append({
-                "type": "add_coaches",
-                "title": "Add Coaches to High-Demand Routes",
-                "desc": f"Routes like **{', '.join(high_demand_routes[:3])}** average over 85% occupancy. Recommend attaching 2-3 extra coaches to standard consists on these lines."
-            })
+        # Check if a prediction has been made
+        if 'latest_prediction' in st.session_state:
+            pred_data = st.session_state['latest_prediction']
+            route = pred_data['route']
+            forecast = pred_data['forecast']
+            time_val = pred_data['time'].strftime('%H:%M')
+            date_val = pred_data['date']
             
-        # 2. Schedule extra trains during peak hours
-        hr_occ = df.groupby('Hour')['Seat Occupancy (%)'].mean()
-        peak_hours = hr_occ[hr_occ > 90].index.tolist()
-        if peak_hours:
-            str_hours = [f"{h}:00" for h in peak_hours]
-            recs.append({
-                "type": "extra_trains",
-                "title": "Schedule Extra Peak Trains",
-                "desc": f"System-wide occupancy spikes during **{', '.join(str_hours)}**. Recommend scheduling relief trains 15 mins before these peak windows."
-            })
+            st.markdown(f"### Recommendations for Forecasted Trip: {route}")
+            st.markdown(f"**Date:** {date_val} | **Time:** {time_val} | **Predicted Load:** {int(forecast)} Passengers")
             
-        # 3. Underused platforms
-        platform_usage = df['Platform Number'].value_counts()
-        avg_usage = platform_usage.mean()
-        underused = platform_usage[platform_usage < (avg_usage * 0.5)].index.tolist()
-        if underused:
-            recs.append({
-                "type": "reassign_platforms",
-                "title": "Optimize Platform Usage",
-                "desc": f"Platforms **{', '.join(map(str, underused))}** are significantly underused. Re-route shorter commuter trains here to relieve main concourse congestion."
-            })
+            st.markdown("---")
+            recs = []
             
-        # Render Recommendations
-        if not recs:
-            st.success("Your resources are optimally allocated based on current data! No immediate action required.")
-        else:
+            # Recommendation 1: Coach Scaling
+            base_capacity = 60
+            baseline_train_coaches = 10 
+            baseline_capacity = base_capacity * baseline_train_coaches
+            
+            if forecast > baseline_capacity:
+                shortage = int(forecast - baseline_capacity)
+                extra_coaches = int(np.ceil(shortage / base_capacity))
+                recs.append({
+                    "title": f"🚨 Critical: Add {extra_coaches} Extra Coaches",
+                    "desc": f"The forecasted demand ({int(forecast)}) exceeds standard train capacity ({baseline_capacity} pax). You must securely attach at least **{extra_coaches}** extra carriage(s) to the {time_val} run to prevent extreme standing-room crowding."
+                })
+            else:
+                 recs.append({
+                    "title": "✅ Standard Coach Configuration is Sufficient",
+                    "desc": f"A standard {baseline_train_coaches}-coach train can comfortably seat {baseline_capacity} passengers. The exact forecast of {int(forecast)} allows for a standard operational layout with no alterations needed."
+                })
+                 
+            # Recommendation 2: Frequency & Platforming
+            if forecast > 400:
+                recs.append({
+                    "title": "🚉 High-Density: Deploy Relief Train",
+                    "desc": f"Ridership approaches dangerous platform saturation points. Recommend scheduling an unscheduled \"Relief Train\" along the {route} line 15 minutes prior to {time_val}."
+                })
+            elif pred_data['time'].hour in [7,8,9,17,18,19]:
+                recs.append({
+                    "title": "⏳ Peak Hour Platform Management",
+                    "desc": f"Because {time_val} falls during peak commuter hours, passenger boarding times will increase. Assign this train to your longest, most accessible platform (e.g. Platform 1 or 2) to ease concourse throughput."
+                })
+            
+            # Recommendation 3: Staffing
+            if pred_data['is_holiday'] == 1:
+                 recs.append({
+                    "title": "🎉 Holiday Staffing Required",
+                    "desc": "Because this prediction falls on an observed holiday and/or weekend, passenger baggage and boarding confusion will be higher. Double the platform attendant staff for this specific departure."
+                })
+                 
             for i, rec in enumerate(recs):
+                icon = rec['title'].split()[0] if len(rec['title']) > 0 and not rec['title'][0].isalpha() else "👉"
+                color = "#dc2626" if "Critical" in rec['title'] else ("#16a34a" if "Standard" in rec['title'] else "#2563eb")
+                bg_color = "#fef2f2" if "Critical" in rec['title'] else ("#f0fdf4" if "Standard" in rec['title'] else "#eff6ff")
+                
                 st.markdown(f"""
-                <div style="padding: 15px; border-left: 5px solid #2563eb; background-color: #f0fdf4; margin-bottom: 15px; border-radius: 4px;">
-                    <h4 style="margin-top: 0;">{i+1}. {rec['title']}</h4>
+                <div style="padding: 15px; border-left: 5px solid {color}; background-color: {bg_color}; margin-bottom: 15px; border-radius: 4px;">
+                    <h4 style="margin-top: 0; color: {color};">{rec['title']}</h4>
                     <p style="margin-bottom: 0;">{rec['desc']}</p>
                 </div>
                 """, unsafe_allow_html=True)
+                
+        else:
+             st.info("👈 **Please generate a prediction in the 'Demand Prediction' tab to see active resource recommendations for that specific forecast.**")
+             
+        
+        st.markdown("---")
+        st.subheader("Historical System-Wide Insights")
+        
+        # Keep the top historic recommendations as generic fallback analysis
+        # (The original historical logic is simplified and placed below the active prediction)
+        
+        avg_occ_per_route = df.groupby('Route')['Seat Occupancy (%)'].mean().sort_values(ascending=False)
+        high_demand_routes = avg_occ_per_route[avg_occ_per_route > 85].index.tolist()
+        
+        if high_demand_routes:
+             top_route = high_demand_routes[0]
+             st.markdown(f"**Long-Term Trend:** The **{top_route}** consistently requires maximum operational capacity week-over-week.")
+             
+        hr_occ = df.groupby('Hour')['Passenger Count'].sum()
+        peak_hour = hr_occ.idxmax()
+        st.markdown(f"**System Peak Hour:** Historically, system-wide crowding occurs strictly around **{peak_hour}:00** daily.")
+
 
 if __name__ == "__main__":
     main()
